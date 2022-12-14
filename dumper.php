@@ -115,7 +115,7 @@ abstract class Shuttle_Dumper {
 	
 	/**
 	 * @var Shuttle_DBConn
-	 */	
+	 */
 	public $db;
 
 	/**
@@ -319,7 +319,11 @@ class Shuttle_Dumper_Native extends Shuttle_Dumper {
 		unset($this->dump_file);
 	}
 
-	protected function dump_table($table) {
+	protected function dump_table($table)
+	{
+		$seqLimit = 10000;
+		$db       = Factory::getDbo();
+
 		$eol = $this->eol;
 
 		$this->dump_file->write("DROP TABLE IF EXISTS `$table`;$eol");
@@ -327,32 +331,52 @@ class Shuttle_Dumper_Native extends Shuttle_Dumper {
 		$create_table_sql = $this->get_create_table_sql($table);
 		$this->dump_file->write($create_table_sql . $eol . $eol);
 
-		$data = $this->db->query("SELECT * FROM `$table`");
+		$query_count = $db->getQuery(true);
+		$query_count->select('COUNT(*)');
+		$query_count->from($table);
+		$db->setQuery($query_count);
 
-		$insert = new Shuttle_Insert_Statement($table);
+		$row_count = $db->loadresult();
+		$row_count = (int) (ceil($row_count / $seqLimit));
 
-		while ($row = $this->db->fetch_row($data)) {
-			$row_values = array();
-			foreach ($row as $value) {
-				$row_values[] = $this->db->escape($value);
+		for ($i = 0; $i < $row_count; $i++)
+		{
+
+			$q_limitStart = $i * $seqLimit;
+			$q_limit      = $seqLimit;
+
+			$data = $this->db->query("SELECT * FROM `$table` LIMIT " . $q_limitStart . " , " . $q_limit);
+
+			$insert = new Shuttle_Insert_Statement($table);
+
+			while ($row = $this->db->fetch_row($data))
+			{
+				$row_values = array();
+				foreach ($row as $value)
+				{
+					$row_values[] = $this->db->escape($value);
+				}
+				$insert->add_row($row_values);
+
+				if ($insert->get_length() > self::INSERT_THRESHOLD)
+				{
+					// The insert got too big: write the SQL and create
+					// new insert statement
+					$this->dump_file->write($insert->get_sql() . $eol);
+					$insert->reset();
+				}
 			}
-			$insert->add_row( $row_values );
 
-			if ($insert->get_length() > self::INSERT_THRESHOLD) {
-				// The insert got too big: write the SQL and create
-				// new insert statement
+
+			$sql = $insert->get_sql();
+			if ($sql)
+			{
 				$this->dump_file->write($insert->get_sql() . $eol);
-				$insert->reset();
 			}
+			$this->dump_file->write($eol . $eol);
 		}
-
-		$sql = $insert->get_sql();
-		if ($sql) {
-			$this->dump_file->write($insert->get_sql() . $eol);
-		}
-		$this->dump_file->write($eol . $eol);
 	}
-	
+
 	public function get_create_table_sql($table) {
 		$create_table_sql = $this->db->fetch('SHOW CREATE TABLE `' . $table . '`');
 		return $create_table_sql[0]['Create Table'] . ';';
